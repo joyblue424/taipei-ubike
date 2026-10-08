@@ -28,15 +28,13 @@
       z-index: 10;
       background-color: #0f172a;
     }
-    /* 懸浮 Canvas 覆蓋層 */
+    /* 懸浮 Canvas 覆蓋層：由 Leaflet 自訂 bikeCanvasPane (z-index: 450) 控制層級 */
     #bikeCanvas {
       position: absolute;
       top: 0;
       left: 0;
-      width: 100%;
-      height: 100%;
       pointer-events: none;
-      z-index: 400; /* 位於 Leaflet Tile Layer 之上，Popup 之下 */
+      transform-origin: 0 0;
     }
     /* 自訂 Leaflet 彈出視窗樣式 */
     .leaflet-popup-content-wrapper {
@@ -256,15 +254,28 @@
       // 將縮放按鈕移至右上角
       L.control.zoom({ position: 'topright' }).addTo(map);
 
-      // 初始化 Canvas 元素與 Context
+      // 建立專屬 Leaflet Pane，確保 Canvas 嚴格位於圖資底圖 (200) 之上，但位於 Popup 彈窗 (700) 之下
+      const bikePane = map.createPane('bikeCanvasPane');
+      bikePane.style.zIndex = '450';
+
+      // 初始化 Canvas 元素並掛載至 bikePane
       canvas = document.getElementById('bikeCanvas');
+      bikePane.appendChild(canvas);
       ctx = canvas.getContext('2d');
 
       resizeCanvas();
       window.addEventListener('resize', resizeCanvas);
 
-      // 地圖拖曳或縮放時，重新計算站點的螢幕座標
-      map.on('move', updateStationScreenCoords);
+      // 監聽彈窗關閉事件，重設選中站點
+      map.on('popupclose', () => {
+        selectedStation = null;
+      });
+
+      // 地圖拖曳或縮放時，重新計算站點的螢幕座標與 Canvas 視口補償
+      map.on('move', () => {
+        syncCanvasTransform();
+        updateStationScreenCoords();
+      });
       map.on('zoom', updateStationScreenCoords);
       map.on('viewreset', updateStationScreenCoords);
 
@@ -286,8 +297,19 @@
       canvas.style.width = rect.width + 'px';
       canvas.style.height = rect.height + 'px';
 
+      // 先重設變換矩陣，避免重複 scale 導致縮放乘積失真
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.scale(dpr, dpr);
+      syncCanvasTransform();
       updateStationScreenCoords();
+    }
+
+    // 將 Canvas 座標偏移與 Leaflet 地圖平移保持同步，保證繪製的原點始終鎖定在目前可見視窗
+    function syncCanvasTransform() {
+      if (!map || !canvas) return;
+      const mapPane = map.getPanes().mapPane;
+      const mapPanePos = L.DomUtil.getPosition(mapPane) || { x: 0, y: 0 };
+      canvas.style.transform = `translate3d(${-mapPanePos.x}px, ${-mapPanePos.y}px, 0)`;
     }
 
     // 將站點經緯度轉換為當前畫面像素座標 (Screen Space)
@@ -431,6 +453,9 @@
         requestAnimationFrame(renderCanvasLoop);
         return;
       }
+
+      // 同步視窗補償偏移，確保拖曳期間 60fps 零延遲對齊
+      syncCanvasTransform();
 
       const rect = map.getContainer().getBoundingClientRect();
       ctx.clearRect(0, 0, rect.width, rect.height);
